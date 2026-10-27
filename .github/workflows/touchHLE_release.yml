@@ -34,8 +34,87 @@ jobs:
       shell: bash
       run: |
         git fetch --depth 1 https://github.com/touchHLE/touchHLE ca1de89c578e79746f33c1332e28efd106c334ba
-        git checkout FETCH_HEAD -- src/frameworks/core_foundation/cf_bundle.rs src/frameworks/core_foundation/cf_url.rs src/frameworks/foundation/ns_file_handle.rs src/frameworks/foundation/ns_string.rs src/frameworks/openal.rs src/frameworks/uikit/ui_font.rs
+        git checkout FETCH_HEAD -- src/frameworks/avfoundation/av_audio_player.rs src/frameworks/core_foundation/cf_bundle.rs src/frameworks/core_foundation/cf_url.rs src/frameworks/foundation/ns_file_handle.rs src/frameworks/foundation/ns_string.rs src/frameworks/openal.rs src/frameworks/uikit/ui_font.rs
         cat > wot.patch <<'WOT_PATCH_EOF'
+        diff --git a/src/frameworks/avfoundation/av_audio_player.rs b/src/frameworks/avfoundation/av_audio_player.rs
+        index 61c0da3..957587e 100644
+        --- a/src/frameworks/avfoundation/av_audio_player.rs
+        +++ b/src/frameworks/avfoundation/av_audio_player.rs
+        @@ -32,6 +32,35 @@ use crate::Environment;
+
+         const kNumberBuffers: usize = 3;
+
+        +// Wall-clock start of playback: (start instant, offset in seconds). The
+        +// packet-based clock only advances once per queue buffer, and is exactly 0
+        +// right after play(); some apps (World of Tunes) treat a 0 time as "song
+        +// finished". So while playing, currentTime follows the host clock.
+        +static PLAY_CLOCK: std::sync::Mutex<
+        +    Option<std::collections::HashMap<u32, (std::time::Instant, f64)>>,
+        +> = std::sync::Mutex::new(None);
+        +
+        +fn play_clock_set(key: u32, value: Option<(std::time::Instant, f64)>) {
+        +    let mut guard = PLAY_CLOCK.lock().unwrap();
+        +    let map = guard.get_or_insert_with(Default::default);
+        +    match value {
+        +        Some(v) => {
+        +            map.insert(key, v);
+        +        }
+        +        None => {
+        +            map.remove(&key);
+        +        }
+        +    }
+        +}
+        +
+        +fn play_clock_get(key: u32) -> Option<(std::time::Instant, f64)> {
+        +    PLAY_CLOCK
+        +        .lock()
+        +        .unwrap()
+        +        .as_ref()
+        +        .and_then(|m| m.get(&key).copied())
+        +}
+        +
+         struct AVAudioPlayerHostObject {
+             audio_file_url: id,
+             output_callback: AudioQueueOutputCallback,
+        @@ -246,6 +275,8 @@ pub const CLASSES: ClassExports = objc_classes! {
+
+         - (bool)play {
+             () = msg![env; this prepareToPlay];
+        +    let start_time: NSTimeInterval = msg![env; this currentTime];
+        +    play_clock_set(this.to_bits(), Some((std::time::Instant::now(), start_time)));
+
+             let aq_ref = env.objc.borrow_mut::<AVAudioPlayerHostObject>(this).audio_queue.unwrap();
+
+        @@ -258,6 +289,9 @@ pub const CLASSES: ClassExports = objc_classes! {
+         }
+
+         - (())pause {
+        +    let paused_time: NSTimeInterval = msg![env; this currentTime];
+        +    play_clock_set(this.to_bits(), None);
+        +    env.objc.borrow_mut::<AVAudioPlayerHostObject>(this).set_current_time = paused_time;
+             env.objc.borrow_mut::<AVAudioPlayerHostObject>(this).is_playing = false;
+             if let Some(aq_ref) = env.objc.borrow::<AVAudioPlayerHostObject>(this).audio_queue {
+                 AudioQueuePause(env, aq_ref);
+        @@ -265,6 +299,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+         }
+
+         - (())stop {
+        +    play_clock_set(this.to_bits(), None);
+             let &mut AVAudioPlayerHostObject {
+                 audio_queue,
+                 audio_queue_buffers,
+        @@ -311,7 +346,10 @@ pub const CLASSES: ClassExports = objc_classes! {
+
+         - (NSTimeInterval)currentTime {
+             let host_object = env.objc.borrow::<AVAudioPlayerHostObject>(this);
+        -    let current_time = if let Some(audio_desc) = host_object.audio_desc {
+        +    let wall = if host_object.is_playing { play_clock_get(this.to_bits()) } else { None };
+        +    let current_time = if let Some((start, offset)) = wall {
+        +        offset + start.elapsed().as_secs_f64()
+        +    } else if let Some(audio_desc) = host_object.audio_desc {
+                 let current_frame = (host_object.current_packet as f64) * (audio_desc.frames_per_packet as f64);
+                 current_frame / audio_desc.sample_rate
+             } else {
         diff --git a/src/frameworks/core_foundation/cf_bundle.rs b/src/frameworks/core_foundation/cf_bundle.rs
         index 2925350..a6ac779 100644
         --- a/src/frameworks/core_foundation/cf_bundle.rs
@@ -333,8 +412,87 @@ jobs:
       shell: bash
       run: |
         git fetch --depth 1 https://github.com/touchHLE/touchHLE ca1de89c578e79746f33c1332e28efd106c334ba
-        git checkout FETCH_HEAD -- src/frameworks/core_foundation/cf_bundle.rs src/frameworks/core_foundation/cf_url.rs src/frameworks/foundation/ns_file_handle.rs src/frameworks/foundation/ns_string.rs src/frameworks/openal.rs src/frameworks/uikit/ui_font.rs
+        git checkout FETCH_HEAD -- src/frameworks/avfoundation/av_audio_player.rs src/frameworks/core_foundation/cf_bundle.rs src/frameworks/core_foundation/cf_url.rs src/frameworks/foundation/ns_file_handle.rs src/frameworks/foundation/ns_string.rs src/frameworks/openal.rs src/frameworks/uikit/ui_font.rs
         cat > wot.patch <<'WOT_PATCH_EOF'
+        diff --git a/src/frameworks/avfoundation/av_audio_player.rs b/src/frameworks/avfoundation/av_audio_player.rs
+        index 61c0da3..957587e 100644
+        --- a/src/frameworks/avfoundation/av_audio_player.rs
+        +++ b/src/frameworks/avfoundation/av_audio_player.rs
+        @@ -32,6 +32,35 @@ use crate::Environment;
+
+         const kNumberBuffers: usize = 3;
+
+        +// Wall-clock start of playback: (start instant, offset in seconds). The
+        +// packet-based clock only advances once per queue buffer, and is exactly 0
+        +// right after play(); some apps (World of Tunes) treat a 0 time as "song
+        +// finished". So while playing, currentTime follows the host clock.
+        +static PLAY_CLOCK: std::sync::Mutex<
+        +    Option<std::collections::HashMap<u32, (std::time::Instant, f64)>>,
+        +> = std::sync::Mutex::new(None);
+        +
+        +fn play_clock_set(key: u32, value: Option<(std::time::Instant, f64)>) {
+        +    let mut guard = PLAY_CLOCK.lock().unwrap();
+        +    let map = guard.get_or_insert_with(Default::default);
+        +    match value {
+        +        Some(v) => {
+        +            map.insert(key, v);
+        +        }
+        +        None => {
+        +            map.remove(&key);
+        +        }
+        +    }
+        +}
+        +
+        +fn play_clock_get(key: u32) -> Option<(std::time::Instant, f64)> {
+        +    PLAY_CLOCK
+        +        .lock()
+        +        .unwrap()
+        +        .as_ref()
+        +        .and_then(|m| m.get(&key).copied())
+        +}
+        +
+         struct AVAudioPlayerHostObject {
+             audio_file_url: id,
+             output_callback: AudioQueueOutputCallback,
+        @@ -246,6 +275,8 @@ pub const CLASSES: ClassExports = objc_classes! {
+
+         - (bool)play {
+             () = msg![env; this prepareToPlay];
+        +    let start_time: NSTimeInterval = msg![env; this currentTime];
+        +    play_clock_set(this.to_bits(), Some((std::time::Instant::now(), start_time)));
+
+             let aq_ref = env.objc.borrow_mut::<AVAudioPlayerHostObject>(this).audio_queue.unwrap();
+
+        @@ -258,6 +289,9 @@ pub const CLASSES: ClassExports = objc_classes! {
+         }
+
+         - (())pause {
+        +    let paused_time: NSTimeInterval = msg![env; this currentTime];
+        +    play_clock_set(this.to_bits(), None);
+        +    env.objc.borrow_mut::<AVAudioPlayerHostObject>(this).set_current_time = paused_time;
+             env.objc.borrow_mut::<AVAudioPlayerHostObject>(this).is_playing = false;
+             if let Some(aq_ref) = env.objc.borrow::<AVAudioPlayerHostObject>(this).audio_queue {
+                 AudioQueuePause(env, aq_ref);
+        @@ -265,6 +299,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+         }
+
+         - (())stop {
+        +    play_clock_set(this.to_bits(), None);
+             let &mut AVAudioPlayerHostObject {
+                 audio_queue,
+                 audio_queue_buffers,
+        @@ -311,7 +346,10 @@ pub const CLASSES: ClassExports = objc_classes! {
+
+         - (NSTimeInterval)currentTime {
+             let host_object = env.objc.borrow::<AVAudioPlayerHostObject>(this);
+        -    let current_time = if let Some(audio_desc) = host_object.audio_desc {
+        +    let wall = if host_object.is_playing { play_clock_get(this.to_bits()) } else { None };
+        +    let current_time = if let Some((start, offset)) = wall {
+        +        offset + start.elapsed().as_secs_f64()
+        +    } else if let Some(audio_desc) = host_object.audio_desc {
+                 let current_frame = (host_object.current_packet as f64) * (audio_desc.frames_per_packet as f64);
+                 current_frame / audio_desc.sample_rate
+             } else {
         diff --git a/src/frameworks/core_foundation/cf_bundle.rs b/src/frameworks/core_foundation/cf_bundle.rs
         index 2925350..a6ac779 100644
         --- a/src/frameworks/core_foundation/cf_bundle.rs
