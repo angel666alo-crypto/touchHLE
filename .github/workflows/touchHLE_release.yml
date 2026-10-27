@@ -17,6 +17,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: Disable CRLF conversion
+      shell: bash
+      run: git config --global core.autocrlf false
     # actions/checkout really doesn't work well with git-describe for some
     # reason (most likely it strips the annotation off the tag somehow).
     - name: Checkout touchHLE
@@ -27,6 +30,203 @@ jobs:
         cd "$GITHUB_WORKSPACE"
         git fetch origin "$GITHUB_REF"
         git checkout "$GITHUB_SHA" # avoid race condition if branch/tag changes
+    - name: Restore original sources and apply the World of Tunes patch
+      shell: bash
+      run: |
+        git fetch --depth 1 https://github.com/touchHLE/touchHLE ca1de89c578e79746f33c1332e28efd106c334ba
+        git checkout FETCH_HEAD -- src/frameworks/core_foundation/cf_bundle.rs src/frameworks/core_foundation/cf_url.rs src/frameworks/foundation/ns_file_handle.rs src/frameworks/foundation/ns_string.rs src/frameworks/openal.rs src/frameworks/uikit/ui_font.rs
+        cat > wot.patch <<'WOT_PATCH_EOF'
+        diff --git a/src/frameworks/core_foundation/cf_bundle.rs b/src/frameworks/core_foundation/cf_bundle.rs
+        index 2925350..a6ac779 100644
+        --- a/src/frameworks/core_foundation/cf_bundle.rs
+        +++ b/src/frameworks/core_foundation/cf_bundle.rs
+        @@ -107,6 +107,22 @@ fn CFBundleCopyResourceURL(
+             msg![env; url copy]
+         }
+
+        +/// Simplification: .lproj folders are not distinguished; the resource is looked
+        +/// up in the bundle as usual (enough for apps with resources at the root).
+        +fn CFBundleCopyResourceURLForLocalization(
+        +    env: &mut Environment,
+        +    bundle: CFBundleRef,
+        +    resource_name: CFStringRef,
+        +    resource_type: CFStringRef,
+        +    sub_dir_name: CFStringRef,
+        +    _localization_name: CFStringRef,
+        +) -> CFURLRef {
+        +    let url: CFURLRef = msg![env; bundle URLForResource:resource_name
+        +                                          withExtension:resource_type
+        +                                           subdirectory:sub_dir_name];
+        +    msg![env; url copy]
+        +}
+        +
+         pub fn CFBundleCopyBundleLocalizations(env: &mut Environment, bundle: CFBundleRef) -> CFArrayRef {
+             let bundle_localizations = env
+                 .objc
+        @@ -197,6 +213,7 @@ pub const FUNCTIONS: FunctionExports = &[
+             export_c_func!(CFBundleCopyExecutableURL(_)),
+             export_c_func!(CFBundleCopyResourcesDirectoryURL(_)),
+             export_c_func!(CFBundleCopyResourceURL(_, _, _, _)),
+        +    export_c_func!(CFBundleCopyResourceURLForLocalization(_, _, _, _, _)),
+             export_c_func!(CFBundleCopyBundleLocalizations(_)),
+             export_c_func!(CFBundleCopyPreferredLocalizationsFromArray(_)),
+             export_c_func!(CFBundleCopyLocalizedString(_, _, _, _)),
+        diff --git a/src/frameworks/core_foundation/cf_url.rs b/src/frameworks/core_foundation/cf_url.rs
+        index 4435cc4..ba2ad37 100644
+        --- a/src/frameworks/core_foundation/cf_url.rs
+        +++ b/src/frameworks/core_foundation/cf_url.rs
+        @@ -20,7 +20,7 @@ use crate::frameworks::foundation::ns_string::{
+         };
+         use crate::frameworks::foundation::NSUInteger;
+         use crate::mem::{ConstPtr, MutPtr, Ptr};
+        -use crate::objc::{id, msg, msg_class, release};
+        +use crate::objc::{id, msg, msg_class, nil, release};
+         use crate::Environment;
+
+         pub type CFURLRef = super::CFTypeRef;
+        @@ -174,6 +174,47 @@ fn CFURLCreateCopyDeletingLastPathComponent(
+             msg![env; new_url copy]
+         }
+
+        +/// Reads the file a file URL points to and returns it as CFData. Only file
+        +/// URLs are supported; properties are not implemented (NULL is returned).
+        +fn CFURLCreateDataAndPropertiesFromResource(
+        +    env: &mut Environment,
+        +    _allocator: CFAllocatorRef,
+        +    url: CFURLRef,
+        +    resource_data: MutPtr<id>,
+        +    properties: MutPtr<id>,
+        +    _desired_properties: id,
+        +    error_code: MutPtr<i32>,
+        +) -> bool {
+        +    let path: id = msg![env; url path];
+        +    let data: id = if path == nil {
+        +        nil
+        +    } else {
+        +        msg_class![env; NSData dataWithContentsOfFile:path]
+        +    };
+        +    if !properties.is_null() {
+        +        env.mem.write(properties, nil);
+        +    }
+        +    if data == nil {
+        +        if !resource_data.is_null() {
+        +            env.mem.write(resource_data, nil);
+        +        }
+        +        if !error_code.is_null() {
+        +            env.mem.write(error_code, -10); // kCFURLResourceNotFoundError
+        +        }
+        +        false
+        +    } else {
+        +        // The caller owns the result ("Create" rule), so retain it.
+        +        let data: id = msg![env; data retain];
+        +        if !resource_data.is_null() {
+        +            env.mem.write(resource_data, data);
+        +        }
+        +        if !error_code.is_null() {
+        +            env.mem.write(error_code, 0);
+        +        }
+        +        true
+        +    }
+        +}
+        +
+         fn CFURLHasDirectoryPath(env: &mut Environment, url: CFURLRef) -> bool {
+             assert!(!url.is_null());
+
+        @@ -204,5 +245,6 @@ pub const FUNCTIONS: FunctionExports = &[
+             export_c_func!(CFURLCopyFileSystemPath(_, _)),
+             export_c_func!(CFURLCreateCopyAppendingPathComponent(_, _, _, _)),
+             export_c_func!(CFURLCreateCopyDeletingLastPathComponent(_, _)),
+        +    export_c_func!(CFURLCreateDataAndPropertiesFromResource(_, _, _, _, _, _)),
+             export_c_func!(CFURLHasDirectoryPath(_)),
+         ];
+        diff --git a/src/frameworks/foundation/ns_file_handle.rs b/src/frameworks/foundation/ns_file_handle.rs
+        index ab46c4c..609cc2a 100644
+        --- a/src/frameworks/foundation/ns_file_handle.rs
+        +++ b/src/frameworks/foundation/ns_file_handle.rs
+        @@ -104,8 +104,10 @@ pub const CLASSES: ClassExports = objc_classes! {
+             match posix_io::read(env, fd, buffer, length) {
+                 -1 => panic!("readDataOfLength: failed"),
+                 bytes_read => {
+        -            assert_eq!(length, bytes_read.try_into().unwrap());
+        -            msg_class![env; NSData dataWithBytesNoCopy:buffer length:length]
+        +            // Like real iOS: at end of file, return whatever was read
+        +            // (possibly nothing) rather than failing.
+        +            let bytes_read: NSUInteger = bytes_read.try_into().unwrap();
+        +            msg_class![env; NSData dataWithBytesNoCopy:buffer length:bytes_read]
+                 }
+             }
+         }
+        diff --git a/src/frameworks/foundation/ns_string.rs b/src/frameworks/foundation/ns_string.rs
+        index 99906b0..8ddc3a8 100644
+        --- a/src/frameworks/foundation/ns_string.rs
+        +++ b/src/frameworks/foundation/ns_string.rs
+        @@ -442,6 +442,15 @@ pub const CLASSES: ClassExports = objc_classes! {
+             msg![env; this initWithBytes:c_string length:len encoding:encoding]
+         }
+
+        +// Simplification: the bytes are copied and the caller's buffer is not freed
+        +// even with freeWhenDone (a small leak, but avoids a double free).
+        +- (id)initWithBytesNoCopy:(ConstPtr<u8>)bytes
+        +                   length:(NSUInteger)len
+        +                 encoding:(NSStringEncoding)encoding
+        +             freeWhenDone:(bool)_free_when_done {
+        +    msg![env; this initWithBytes:bytes length:len encoding:encoding]
+        +}
+        +
+         - (id)initWithCString:(ConstPtr<u8>)c_string
+                      encoding:(NSStringEncoding)encoding {
+             assert!(C_STRING_FRIENDLY_ENCODINGS.contains(&encoding), "encoding {encoding}");
+        diff --git a/src/frameworks/openal.rs b/src/frameworks/openal.rs
+        index 33e5bc4..ff3d97e 100644
+        --- a/src/frameworks/openal.rs
+        +++ b/src/frameworks/openal.rs
+        @@ -116,7 +116,11 @@ macro_rules! try_get_context {
+         // === alc.h ===
+
+         fn alcOpenDevice(env: &mut Environment, devicename: ConstPtr<u8>) -> MutPtr<GuestALCdevice> {
+        -    if !devicename.is_null() {
+        +    // Old iOS exposed the audio device under the name "Generic Hardware" and
+        +    // some apps request it explicitly. Treat it like the default device.
+        +    let is_generic_hardware =
+        +        !devicename.is_null() && env.mem.cstr_at_utf8(devicename) == Ok("Generic Hardware");
+        +    if !devicename.is_null() && !is_generic_hardware {
+                 // If device name name is not null, we check if it's the one which was
+                 // obtained from a call to alcGetString(NULL, ALC_DEVICE_SPECIFIER).
+                 // And if not, we return NULL.
+        diff --git a/src/frameworks/uikit/ui_font.rs b/src/frameworks/uikit/ui_font.rs
+        index bbbc43b..81d2f20 100644
+        --- a/src/frameworks/uikit/ui_font.rs
+        +++ b/src/frameworks/uikit/ui_font.rs
+        @@ -11,7 +11,7 @@ use crate::frameworks::core_graphics::cg_bitmap_context::CGBitmapContextDrawer;
+         use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
+         use crate::frameworks::foundation::ns_string::to_rust_string;
+         use crate::frameworks::foundation::NSInteger;
+        -use crate::objc::{autorelease, id, msg, objc_classes, ClassExports, HostObject};
+        +use crate::objc::{autorelease, id, msg, objc_classes, retain, ClassExports, HostObject};
+         use crate::Environment;
+         use std::collections::HashMap;
+         use std::ops::Range;
+        @@ -144,6 +144,18 @@ pub const CLASSES: ClassExports = objc_classes! {
+                 size: fontSize,
+             };
+             let new = env.objc.alloc_object(this, Box::new(host_object), &mut env.mem);
+        +    // Real iOS caches fonts; some apps do not retain them.
+        +    retain(env, new);
+        +    autorelease(env, new)
+        +}
+        +
+        +// Returns a font with the same style but a different size.
+        +- (id)fontWithSize:(CGFloat)size {
+        +    let kind = env.objc.borrow::<UIFontHostObject>(this).kind;
+        +    let class = env.objc.get_known_class("UIFont", &mut env.mem);
+        +    let host_object = UIFontHostObject { size, kind };
+        +    let new = env.objc.alloc_object(class, Box::new(host_object), &mut env.mem);
+        +    retain(env, new);
+             autorelease(env, new)
+         }
+
+        WOT_PATCH_EOF
+        git apply --ignore-whitespace wot.patch
     - name: Check formatting
       run: dev-scripts/format.sh --check
     - name: Get Submodules
@@ -115,6 +315,9 @@ jobs:
     runs-on: windows-2022
 
     steps:
+    - name: Disable CRLF conversion
+      shell: bash
+      run: git config --global core.autocrlf false
     # actions/checkout really doesn't work well with git-describe for some
     # reason (most likely it strips the annotation off the tag somehow).
     - name: Checkout touchHLE
@@ -126,6 +329,203 @@ jobs:
         git fetch origin "$GITHUB_REF"
         git checkout "$GITHUB_SHA" # avoid race condition if branch/tag changes
     # Apparently the Windows runner already has clang-format? That's nice.
+    - name: Restore original sources and apply the World of Tunes patch
+      shell: bash
+      run: |
+        git fetch --depth 1 https://github.com/touchHLE/touchHLE ca1de89c578e79746f33c1332e28efd106c334ba
+        git checkout FETCH_HEAD -- src/frameworks/core_foundation/cf_bundle.rs src/frameworks/core_foundation/cf_url.rs src/frameworks/foundation/ns_file_handle.rs src/frameworks/foundation/ns_string.rs src/frameworks/openal.rs src/frameworks/uikit/ui_font.rs
+        cat > wot.patch <<'WOT_PATCH_EOF'
+        diff --git a/src/frameworks/core_foundation/cf_bundle.rs b/src/frameworks/core_foundation/cf_bundle.rs
+        index 2925350..a6ac779 100644
+        --- a/src/frameworks/core_foundation/cf_bundle.rs
+        +++ b/src/frameworks/core_foundation/cf_bundle.rs
+        @@ -107,6 +107,22 @@ fn CFBundleCopyResourceURL(
+             msg![env; url copy]
+         }
+
+        +/// Simplification: .lproj folders are not distinguished; the resource is looked
+        +/// up in the bundle as usual (enough for apps with resources at the root).
+        +fn CFBundleCopyResourceURLForLocalization(
+        +    env: &mut Environment,
+        +    bundle: CFBundleRef,
+        +    resource_name: CFStringRef,
+        +    resource_type: CFStringRef,
+        +    sub_dir_name: CFStringRef,
+        +    _localization_name: CFStringRef,
+        +) -> CFURLRef {
+        +    let url: CFURLRef = msg![env; bundle URLForResource:resource_name
+        +                                          withExtension:resource_type
+        +                                           subdirectory:sub_dir_name];
+        +    msg![env; url copy]
+        +}
+        +
+         pub fn CFBundleCopyBundleLocalizations(env: &mut Environment, bundle: CFBundleRef) -> CFArrayRef {
+             let bundle_localizations = env
+                 .objc
+        @@ -197,6 +213,7 @@ pub const FUNCTIONS: FunctionExports = &[
+             export_c_func!(CFBundleCopyExecutableURL(_)),
+             export_c_func!(CFBundleCopyResourcesDirectoryURL(_)),
+             export_c_func!(CFBundleCopyResourceURL(_, _, _, _)),
+        +    export_c_func!(CFBundleCopyResourceURLForLocalization(_, _, _, _, _)),
+             export_c_func!(CFBundleCopyBundleLocalizations(_)),
+             export_c_func!(CFBundleCopyPreferredLocalizationsFromArray(_)),
+             export_c_func!(CFBundleCopyLocalizedString(_, _, _, _)),
+        diff --git a/src/frameworks/core_foundation/cf_url.rs b/src/frameworks/core_foundation/cf_url.rs
+        index 4435cc4..ba2ad37 100644
+        --- a/src/frameworks/core_foundation/cf_url.rs
+        +++ b/src/frameworks/core_foundation/cf_url.rs
+        @@ -20,7 +20,7 @@ use crate::frameworks::foundation::ns_string::{
+         };
+         use crate::frameworks::foundation::NSUInteger;
+         use crate::mem::{ConstPtr, MutPtr, Ptr};
+        -use crate::objc::{id, msg, msg_class, release};
+        +use crate::objc::{id, msg, msg_class, nil, release};
+         use crate::Environment;
+
+         pub type CFURLRef = super::CFTypeRef;
+        @@ -174,6 +174,47 @@ fn CFURLCreateCopyDeletingLastPathComponent(
+             msg![env; new_url copy]
+         }
+
+        +/// Reads the file a file URL points to and returns it as CFData. Only file
+        +/// URLs are supported; properties are not implemented (NULL is returned).
+        +fn CFURLCreateDataAndPropertiesFromResource(
+        +    env: &mut Environment,
+        +    _allocator: CFAllocatorRef,
+        +    url: CFURLRef,
+        +    resource_data: MutPtr<id>,
+        +    properties: MutPtr<id>,
+        +    _desired_properties: id,
+        +    error_code: MutPtr<i32>,
+        +) -> bool {
+        +    let path: id = msg![env; url path];
+        +    let data: id = if path == nil {
+        +        nil
+        +    } else {
+        +        msg_class![env; NSData dataWithContentsOfFile:path]
+        +    };
+        +    if !properties.is_null() {
+        +        env.mem.write(properties, nil);
+        +    }
+        +    if data == nil {
+        +        if !resource_data.is_null() {
+        +            env.mem.write(resource_data, nil);
+        +        }
+        +        if !error_code.is_null() {
+        +            env.mem.write(error_code, -10); // kCFURLResourceNotFoundError
+        +        }
+        +        false
+        +    } else {
+        +        // The caller owns the result ("Create" rule), so retain it.
+        +        let data: id = msg![env; data retain];
+        +        if !resource_data.is_null() {
+        +            env.mem.write(resource_data, data);
+        +        }
+        +        if !error_code.is_null() {
+        +            env.mem.write(error_code, 0);
+        +        }
+        +        true
+        +    }
+        +}
+        +
+         fn CFURLHasDirectoryPath(env: &mut Environment, url: CFURLRef) -> bool {
+             assert!(!url.is_null());
+
+        @@ -204,5 +245,6 @@ pub const FUNCTIONS: FunctionExports = &[
+             export_c_func!(CFURLCopyFileSystemPath(_, _)),
+             export_c_func!(CFURLCreateCopyAppendingPathComponent(_, _, _, _)),
+             export_c_func!(CFURLCreateCopyDeletingLastPathComponent(_, _)),
+        +    export_c_func!(CFURLCreateDataAndPropertiesFromResource(_, _, _, _, _, _)),
+             export_c_func!(CFURLHasDirectoryPath(_)),
+         ];
+        diff --git a/src/frameworks/foundation/ns_file_handle.rs b/src/frameworks/foundation/ns_file_handle.rs
+        index ab46c4c..609cc2a 100644
+        --- a/src/frameworks/foundation/ns_file_handle.rs
+        +++ b/src/frameworks/foundation/ns_file_handle.rs
+        @@ -104,8 +104,10 @@ pub const CLASSES: ClassExports = objc_classes! {
+             match posix_io::read(env, fd, buffer, length) {
+                 -1 => panic!("readDataOfLength: failed"),
+                 bytes_read => {
+        -            assert_eq!(length, bytes_read.try_into().unwrap());
+        -            msg_class![env; NSData dataWithBytesNoCopy:buffer length:length]
+        +            // Like real iOS: at end of file, return whatever was read
+        +            // (possibly nothing) rather than failing.
+        +            let bytes_read: NSUInteger = bytes_read.try_into().unwrap();
+        +            msg_class![env; NSData dataWithBytesNoCopy:buffer length:bytes_read]
+                 }
+             }
+         }
+        diff --git a/src/frameworks/foundation/ns_string.rs b/src/frameworks/foundation/ns_string.rs
+        index 99906b0..8ddc3a8 100644
+        --- a/src/frameworks/foundation/ns_string.rs
+        +++ b/src/frameworks/foundation/ns_string.rs
+        @@ -442,6 +442,15 @@ pub const CLASSES: ClassExports = objc_classes! {
+             msg![env; this initWithBytes:c_string length:len encoding:encoding]
+         }
+
+        +// Simplification: the bytes are copied and the caller's buffer is not freed
+        +// even with freeWhenDone (a small leak, but avoids a double free).
+        +- (id)initWithBytesNoCopy:(ConstPtr<u8>)bytes
+        +                   length:(NSUInteger)len
+        +                 encoding:(NSStringEncoding)encoding
+        +             freeWhenDone:(bool)_free_when_done {
+        +    msg![env; this initWithBytes:bytes length:len encoding:encoding]
+        +}
+        +
+         - (id)initWithCString:(ConstPtr<u8>)c_string
+                      encoding:(NSStringEncoding)encoding {
+             assert!(C_STRING_FRIENDLY_ENCODINGS.contains(&encoding), "encoding {encoding}");
+        diff --git a/src/frameworks/openal.rs b/src/frameworks/openal.rs
+        index 33e5bc4..ff3d97e 100644
+        --- a/src/frameworks/openal.rs
+        +++ b/src/frameworks/openal.rs
+        @@ -116,7 +116,11 @@ macro_rules! try_get_context {
+         // === alc.h ===
+
+         fn alcOpenDevice(env: &mut Environment, devicename: ConstPtr<u8>) -> MutPtr<GuestALCdevice> {
+        -    if !devicename.is_null() {
+        +    // Old iOS exposed the audio device under the name "Generic Hardware" and
+        +    // some apps request it explicitly. Treat it like the default device.
+        +    let is_generic_hardware =
+        +        !devicename.is_null() && env.mem.cstr_at_utf8(devicename) == Ok("Generic Hardware");
+        +    if !devicename.is_null() && !is_generic_hardware {
+                 // If device name name is not null, we check if it's the one which was
+                 // obtained from a call to alcGetString(NULL, ALC_DEVICE_SPECIFIER).
+                 // And if not, we return NULL.
+        diff --git a/src/frameworks/uikit/ui_font.rs b/src/frameworks/uikit/ui_font.rs
+        index bbbc43b..81d2f20 100644
+        --- a/src/frameworks/uikit/ui_font.rs
+        +++ b/src/frameworks/uikit/ui_font.rs
+        @@ -11,7 +11,7 @@ use crate::frameworks::core_graphics::cg_bitmap_context::CGBitmapContextDrawer;
+         use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
+         use crate::frameworks::foundation::ns_string::to_rust_string;
+         use crate::frameworks::foundation::NSInteger;
+        -use crate::objc::{autorelease, id, msg, objc_classes, ClassExports, HostObject};
+        +use crate::objc::{autorelease, id, msg, objc_classes, retain, ClassExports, HostObject};
+         use crate::Environment;
+         use std::collections::HashMap;
+         use std::ops::Range;
+        @@ -144,6 +144,18 @@ pub const CLASSES: ClassExports = objc_classes! {
+                 size: fontSize,
+             };
+             let new = env.objc.alloc_object(this, Box::new(host_object), &mut env.mem);
+        +    // Real iOS caches fonts; some apps do not retain them.
+        +    retain(env, new);
+        +    autorelease(env, new)
+        +}
+        +
+        +// Returns a font with the same style but a different size.
+        +- (id)fontWithSize:(CGFloat)size {
+        +    let kind = env.objc.borrow::<UIFontHostObject>(this).kind;
+        +    let class = env.objc.get_known_class("UIFont", &mut env.mem);
+        +    let host_object = UIFontHostObject { size, kind };
+        +    let new = env.objc.alloc_object(class, Box::new(host_object), &mut env.mem);
+        +    retain(env, new);
+             autorelease(env, new)
+         }
+
+        WOT_PATCH_EOF
+        git apply --ignore-whitespace wot.patch
     - name: Check formatting
       shell: bash # no command output without this
       run: dev-scripts/format.sh --check
