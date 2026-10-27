@@ -37,7 +37,7 @@ jobs:
         git checkout FETCH_HEAD -- src/lib.rs src/frameworks/avfoundation/av_audio_player.rs src/frameworks/core_foundation/cf_bundle.rs src/frameworks/core_foundation/cf_url.rs src/frameworks/foundation/ns_file_handle.rs src/frameworks/foundation/ns_string.rs src/frameworks/openal.rs src/frameworks/uikit/ui_font.rs
         cat > wot.patch <<'WOT_PATCH_EOF'
         diff --git a/src/frameworks/avfoundation/av_audio_player.rs b/src/frameworks/avfoundation/av_audio_player.rs
-        index 61c0da3..ffc171e 100644
+        index 61c0da3..9ae2343 100644
         --- a/src/frameworks/avfoundation/av_audio_player.rs
         +++ b/src/frameworks/avfoundation/av_audio_player.rs
         @@ -32,6 +32,35 @@ use crate::Environment;
@@ -48,11 +48,11 @@ jobs:
         +// packet-based clock only advances once per queue buffer, and is exactly 0
         +// right after play(); some apps (World of Tunes) treat a 0 time as "song
         +// finished". So while playing, currentTime follows the host clock.
-        +static PLAY_CLOCK: std::sync::Mutex<
-        +    Option<std::collections::HashMap<u32, (Option<std::time::Instant>, f64)>>,
-        +> = std::sync::Mutex::new(None);
+        +type PlayClockEntry = (Option<std::time::Instant>, f64);
+        +type PlayClockMap = std::collections::HashMap<u32, PlayClockEntry>;
+        +static PLAY_CLOCK: std::sync::Mutex<Option<PlayClockMap>> = std::sync::Mutex::new(None);
         +
-        +fn play_clock_set(key: u32, value: Option<(Option<std::time::Instant>, f64)>) {
+        +fn play_clock_set(key: u32, value: Option<PlayClockEntry>) {
         +    let mut guard = PLAY_CLOCK.lock().unwrap();
         +    let map = guard.get_or_insert_with(Default::default);
         +    match value {
@@ -65,7 +65,7 @@ jobs:
         +    }
         +}
         +
-        +fn play_clock_get(key: u32) -> Option<(Option<std::time::Instant>, f64)> {
+        +fn play_clock_get(key: u32) -> Option<PlayClockEntry> {
         +    PLAY_CLOCK
         +        .lock()
         +        .unwrap()
@@ -521,7 +521,7 @@ jobs:
         git checkout FETCH_HEAD -- src/lib.rs src/frameworks/avfoundation/av_audio_player.rs src/frameworks/core_foundation/cf_bundle.rs src/frameworks/core_foundation/cf_url.rs src/frameworks/foundation/ns_file_handle.rs src/frameworks/foundation/ns_string.rs src/frameworks/openal.rs src/frameworks/uikit/ui_font.rs
         cat > wot.patch <<'WOT_PATCH_EOF'
         diff --git a/src/frameworks/avfoundation/av_audio_player.rs b/src/frameworks/avfoundation/av_audio_player.rs
-        index 61c0da3..ffc171e 100644
+        index 61c0da3..9ae2343 100644
         --- a/src/frameworks/avfoundation/av_audio_player.rs
         +++ b/src/frameworks/avfoundation/av_audio_player.rs
         @@ -32,6 +32,35 @@ use crate::Environment;
@@ -532,11 +532,11 @@ jobs:
         +// packet-based clock only advances once per queue buffer, and is exactly 0
         +// right after play(); some apps (World of Tunes) treat a 0 time as "song
         +// finished". So while playing, currentTime follows the host clock.
-        +static PLAY_CLOCK: std::sync::Mutex<
-        +    Option<std::collections::HashMap<u32, (Option<std::time::Instant>, f64)>>,
-        +> = std::sync::Mutex::new(None);
+        +type PlayClockEntry = (Option<std::time::Instant>, f64);
+        +type PlayClockMap = std::collections::HashMap<u32, PlayClockEntry>;
+        +static PLAY_CLOCK: std::sync::Mutex<Option<PlayClockMap>> = std::sync::Mutex::new(None);
         +
-        +fn play_clock_set(key: u32, value: Option<(Option<std::time::Instant>, f64)>) {
+        +fn play_clock_set(key: u32, value: Option<PlayClockEntry>) {
         +    let mut guard = PLAY_CLOCK.lock().unwrap();
         +    let map = guard.get_or_insert_with(Default::default);
         +    match value {
@@ -549,7 +549,7 @@ jobs:
         +    }
         +}
         +
-        +fn play_clock_get(key: u32) -> Option<(Option<std::time::Instant>, f64)> {
+        +fn play_clock_get(key: u32) -> Option<PlayClockEntry> {
         +    PLAY_CLOCK
         +        .lock()
         +        .unwrap()
