@@ -374,7 +374,7 @@ jobs:
 
          pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         diff --git a/src/frameworks/media_player/movie_player.rs b/src/frameworks/media_player/movie_player.rs
-        index 63a782f..a6cdd99 100644
+        index 63a782f..01eda28 100644
         --- a/src/frameworks/media_player/movie_player.rs
         +++ b/src/frameworks/media_player/movie_player.rs
         @@ -8,14 +8,101 @@
@@ -512,7 +512,7 @@ jobs:
              if env.framework_state.media_player.movie_player.active_player.is_some() {
                  // Some applications (like NOVA2) may send 2 `stop` messages for each
                  // 1 `play` message for the player. In that case, we want to release
-        @@ -223,6 +322,169 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -223,6 +322,173 @@ pub const CLASSES: ClassExports = objc_classes! {
 
          };
 
@@ -593,8 +593,12 @@ jobs:
         +
         +/// Called when the user touches the screen: skips the video.
         +pub fn request_skip(env: &mut Environment) {
+        +    // Ignore taps right after the video starts, so that a double tap on the
+        +    // button that launched it doesn't skip it immediately.
         +    if let Some(pb) = State::get(env).video.as_mut() {
-        +        pb.skip = true;
+        +        if pb.start.elapsed() > Duration::from_millis(2000) {
+        +            pb.skip = true;
+        +        }
         +    }
         +}
         +
@@ -1275,7 +1279,7 @@ jobs:
 
          pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         diff --git a/src/frameworks/media_player/movie_player.rs b/src/frameworks/media_player/movie_player.rs
-        index 63a782f..a6cdd99 100644
+        index 63a782f..01eda28 100644
         --- a/src/frameworks/media_player/movie_player.rs
         +++ b/src/frameworks/media_player/movie_player.rs
         @@ -8,14 +8,101 @@
@@ -1413,7 +1417,7 @@ jobs:
              if env.framework_state.media_player.movie_player.active_player.is_some() {
                  // Some applications (like NOVA2) may send 2 `stop` messages for each
                  // 1 `play` message for the player. In that case, we want to release
-        @@ -223,6 +322,169 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -223,6 +322,173 @@ pub const CLASSES: ClassExports = objc_classes! {
 
          };
 
@@ -1494,8 +1498,12 @@ jobs:
         +
         +/// Called when the user touches the screen: skips the video.
         +pub fn request_skip(env: &mut Environment) {
+        +    // Ignore taps right after the video starts, so that a double tap on the
+        +    // button that launched it doesn't skip it immediately.
         +    if let Some(pb) = State::get(env).video.as_mut() {
-        +        pb.skip = true;
+        +        if pb.start.elapsed() > Duration::from_millis(2000) {
+        +            pb.skip = true;
+        +        }
         +    }
         +}
         +
