@@ -37,7 +37,7 @@ jobs:
         git checkout FETCH_HEAD -- src/lib.rs src/frameworks/avfoundation/av_audio_player.rs src/frameworks/core_foundation/cf_bundle.rs src/frameworks/core_foundation/cf_url.rs src/frameworks/foundation/ns_file_handle.rs src/frameworks/foundation/ns_string.rs src/frameworks/openal.rs src/frameworks/uikit/ui_font.rs
         cat > wot.patch <<'WOT_PATCH_EOF'
         diff --git a/src/frameworks/avfoundation/av_audio_player.rs b/src/frameworks/avfoundation/av_audio_player.rs
-        index 61c0da3..9ae2343 100644
+        index 61c0da3..67bab73 100644
         --- a/src/frameworks/avfoundation/av_audio_player.rs
         +++ b/src/frameworks/avfoundation/av_audio_player.rs
         @@ -32,6 +32,35 @@ use crate::Environment;
@@ -108,7 +108,15 @@ jobs:
              let &mut AVAudioPlayerHostObject {
                  audio_queue,
                  audio_queue_buffers,
-        @@ -311,19 +351,32 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -300,6 +340,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+         }
+
+         - (())dealloc {
+        +    play_clock_set(this.to_bits(), None);
+             () = msg![env; this stop];
+             let &AVAudioPlayerHostObject {audio_file_url, audio_file_id, ..} = env.objc.borrow(this);
+             release(env, audio_file_url);
+        @@ -311,19 +352,47 @@ pub const CLASSES: ClassExports = objc_classes! {
 
          - (NSTimeInterval)currentTime {
              let host_object = env.objc.borrow::<AVAudioPlayerHostObject>(this);
@@ -134,6 +142,21 @@ jobs:
          }
          - (())setCurrentTime:(NSTimeInterval)currentTime {
              // TODO: Support setting current time before having an audio description
+        +    // Seeking while a queue exists: audio already buffered would keep playing
+        +    // from the old position, so rebuild the queue at the new position.
+        +    let (has_queue, was_playing, old_volume, loops) = {
+        +        let h = env.objc.borrow::<AVAudioPlayerHostObject>(this);
+        +        (h.audio_queue.is_some(), h.is_playing, h.volume, h.num_of_loops)
+        +    };
+        +    if has_queue && was_playing {
+        +        () = msg![env; this stop];
+        +        let h = env.objc.borrow_mut::<AVAudioPlayerHostObject>(this);
+        +        h.set_current_time = currentTime;
+        +        h.volume = old_volume;
+        +        h.num_of_loops = loops;
+        +        let _: bool = msg![env; this play];
+        +        return;
+        +    }
              let host_object = env.objc.borrow_mut::<AVAudioPlayerHostObject>(this);
              host_object.set_current_time = currentTime;
         +    let was_playing = host_object.is_playing;
@@ -521,7 +544,7 @@ jobs:
         git checkout FETCH_HEAD -- src/lib.rs src/frameworks/avfoundation/av_audio_player.rs src/frameworks/core_foundation/cf_bundle.rs src/frameworks/core_foundation/cf_url.rs src/frameworks/foundation/ns_file_handle.rs src/frameworks/foundation/ns_string.rs src/frameworks/openal.rs src/frameworks/uikit/ui_font.rs
         cat > wot.patch <<'WOT_PATCH_EOF'
         diff --git a/src/frameworks/avfoundation/av_audio_player.rs b/src/frameworks/avfoundation/av_audio_player.rs
-        index 61c0da3..9ae2343 100644
+        index 61c0da3..67bab73 100644
         --- a/src/frameworks/avfoundation/av_audio_player.rs
         +++ b/src/frameworks/avfoundation/av_audio_player.rs
         @@ -32,6 +32,35 @@ use crate::Environment;
@@ -592,7 +615,15 @@ jobs:
              let &mut AVAudioPlayerHostObject {
                  audio_queue,
                  audio_queue_buffers,
-        @@ -311,19 +351,32 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -300,6 +340,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+         }
+
+         - (())dealloc {
+        +    play_clock_set(this.to_bits(), None);
+             () = msg![env; this stop];
+             let &AVAudioPlayerHostObject {audio_file_url, audio_file_id, ..} = env.objc.borrow(this);
+             release(env, audio_file_url);
+        @@ -311,19 +352,47 @@ pub const CLASSES: ClassExports = objc_classes! {
 
          - (NSTimeInterval)currentTime {
              let host_object = env.objc.borrow::<AVAudioPlayerHostObject>(this);
@@ -618,6 +649,21 @@ jobs:
          }
          - (())setCurrentTime:(NSTimeInterval)currentTime {
              // TODO: Support setting current time before having an audio description
+        +    // Seeking while a queue exists: audio already buffered would keep playing
+        +    // from the old position, so rebuild the queue at the new position.
+        +    let (has_queue, was_playing, old_volume, loops) = {
+        +        let h = env.objc.borrow::<AVAudioPlayerHostObject>(this);
+        +        (h.audio_queue.is_some(), h.is_playing, h.volume, h.num_of_loops)
+        +    };
+        +    if has_queue && was_playing {
+        +        () = msg![env; this stop];
+        +        let h = env.objc.borrow_mut::<AVAudioPlayerHostObject>(this);
+        +        h.set_current_time = currentTime;
+        +        h.volume = old_volume;
+        +        h.num_of_loops = loops;
+        +        let _: bool = msg![env; this play];
+        +        return;
+        +    }
              let host_object = env.objc.borrow_mut::<AVAudioPlayerHostObject>(this);
              host_object.set_current_time = currentTime;
         +    let was_playing = host_object.is_playing;
