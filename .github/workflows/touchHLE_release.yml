@@ -37,7 +37,7 @@ jobs:
         git checkout FETCH_HEAD -- src/frameworks/media_player/movie_player.rs src/frameworks/media_player.rs src/frameworks/core_animation/composition.rs src/frameworks/uikit.rs src/lib.rs src/frameworks/avfoundation/av_audio_player.rs src/frameworks/core_foundation/cf_bundle.rs src/frameworks/core_foundation/cf_url.rs src/frameworks/foundation/ns_file_handle.rs src/frameworks/foundation/ns_string.rs src/frameworks/openal.rs src/frameworks/uikit/ui_font.rs src/frameworks/opengles/eagl.rs
         cat > wot.patch <<'WOT_PATCH_EOF'
         diff --git a/src/frameworks/avfoundation/av_audio_player.rs b/src/frameworks/avfoundation/av_audio_player.rs
-        index 61c0da3..7213ad0 100644
+        index 61c0da3..5fcf238 100644
         --- a/src/frameworks/avfoundation/av_audio_player.rs
         +++ b/src/frameworks/avfoundation/av_audio_player.rs
         @@ -32,6 +32,35 @@ use crate::Environment;
@@ -76,9 +76,13 @@ jobs:
          struct AVAudioPlayerHostObject {
              audio_file_url: id,
              output_callback: AudioQueueOutputCallback,
-        @@ -246,6 +275,14 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -245,7 +274,18 @@ pub const CLASSES: ClassExports = objc_classes! {
+         }
          
          - (bool)play {
+        +    if crate::frameworks::media_player::movie_player::defer_play(env, this) {
+        +        return true;
+        +    }
              () = msg![env; this prepareToPlay];
         +    // After pause() the audio queue resumes exactly where it stopped, so the
         +    // clock must resume from the paused time, not from the packet position
@@ -91,7 +95,7 @@ jobs:
          
              let aq_ref = env.objc.borrow_mut::<AVAudioPlayerHostObject>(this).audio_queue.unwrap();
          
-        @@ -258,6 +295,8 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -258,6 +298,8 @@ pub const CLASSES: ClassExports = objc_classes! {
          }
          
          - (())pause {
@@ -100,7 +104,7 @@ jobs:
              env.objc.borrow_mut::<AVAudioPlayerHostObject>(this).is_playing = false;
              if let Some(aq_ref) = env.objc.borrow::<AVAudioPlayerHostObject>(this).audio_queue {
                  AudioQueuePause(env, aq_ref);
-        @@ -265,6 +304,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -265,6 +307,7 @@ pub const CLASSES: ClassExports = objc_classes! {
          }
          
          - (())stop {
@@ -108,7 +112,7 @@ jobs:
              let &mut AVAudioPlayerHostObject {
                  audio_queue,
                  audio_queue_buffers,
-        @@ -300,6 +340,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -300,6 +343,7 @@ pub const CLASSES: ClassExports = objc_classes! {
          }
          
          - (())dealloc {
@@ -116,7 +120,7 @@ jobs:
              () = msg![env; this stop];
              let &AVAudioPlayerHostObject {audio_file_url, audio_file_id, ..} = env.objc.borrow(this);
              release(env, audio_file_url);
-        @@ -311,19 +352,80 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -311,19 +355,80 @@ pub const CLASSES: ClassExports = objc_classes! {
          
          - (NSTimeInterval)currentTime {
              let host_object = env.objc.borrow::<AVAudioPlayerHostObject>(this);
@@ -374,7 +378,7 @@ jobs:
          
          pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         diff --git a/src/frameworks/media_player/movie_player.rs b/src/frameworks/media_player/movie_player.rs
-        index 63a782f..74bcfeb 100644
+        index 63a782f..4d2780c 100644
         --- a/src/frameworks/media_player/movie_player.rs
         +++ b/src/frameworks/media_player/movie_player.rs
         @@ -8,14 +8,101 @@
@@ -479,7 +483,7 @@ jobs:
          #[derive(Default)]
          pub struct State {
              active_player: Option<id>,
-        @@ -25,6 +112,10 @@ pub struct State {
+        @@ -25,6 +112,12 @@ pub struct State {
              /// delay such notifications until the app next returns to the run loop,
              /// which seems to be late enough.
              pending_notifications: VecDeque<(&'static str, id, Instant)>,
@@ -487,10 +491,12 @@ jobs:
         +    video_pack: Option<Option<VideoPack>>,
         +    video: Option<VideoPlayback>,
         +    intro_started: bool,
+        +    /// Game audio whose start is held back until the video has ended.
+        +    deferred_audio: Vec<id>,
          }
          impl State {
              fn get(env: &mut Environment) -> &mut Self {
-        @@ -176,6 +267,10 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -176,6 +269,10 @@ pub const CLASSES: ClassExports = objc_classes! {
              retain(env, this);
              env.framework_state.media_player.movie_player.active_player = Some(this);
          
@@ -501,7 +507,7 @@ jobs:
              // Act as if playback immediately completed after 1 second
              // (various apps wait for this, such as BIA and Hero of Sparta).
              let notif = (MPMoviePlayerPlaybackDidFinishNotification, this, Instant::now().checked_add(Duration::from_millis(1000)).unwrap());
-        @@ -195,6 +290,11 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -195,6 +292,11 @@ pub const CLASSES: ClassExports = objc_classes! {
          
          - (())stop {
              log!("TODO: [(MPMoviePlayerController*){:?} stop]", this);
@@ -513,7 +519,7 @@ jobs:
              if env.framework_state.media_player.movie_player.active_player.is_some() {
                  // Some applications (like NOVA2) may send 2 `stop` messages for each
                  // 1 `play` message for the player. In that case, we want to release
-        @@ -223,6 +323,216 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -223,6 +325,237 @@ pub const CLASSES: ClassExports = objc_classes! {
          
          };
          
@@ -611,6 +617,11 @@ jobs:
         +        let _: () = msg![env; audio stop];
         +        release(env, audio);
         +    }
+        +    let deferred = std::mem::take(&mut State::get(env).deferred_audio);
+        +    for player in deferred {
+        +        let _: bool = msg![env; player play];
+        +        release(env, player);
+        +    }
         +    if let Some(texture) = pb.texture {
         +        let mut gles = env.window.as_mut().unwrap().make_internal_gl_ctx_current();
         +        unsafe { gles.DeleteTextures(1, &texture) };
@@ -624,6 +635,22 @@ jobs:
         +        pb.player,
         +        Instant::now(),
         +    ));
+        +}
+        +
+        +/// While a video is shown, the game's own audio is held back so it doesn't
+        +/// play over the video. Returns true if this `play` call was deferred.
+        +pub fn defer_play(env: &mut Environment, player: id) -> bool {
+        +    let Some(pb) = State::get(env).video.as_ref() else {
+        +        return false;
+        +    };
+        +    if pb.audio == player {
+        +        return false;
+        +    }
+        +    if !State::get(env).deferred_audio.contains(&player) {
+        +        retain(env, player);
+        +        State::get(env).deferred_audio.push(player);
+        +    }
+        +    true
         +}
         +
         +/// Whether a video is currently being shown.
@@ -1006,7 +1033,7 @@ jobs:
         git checkout FETCH_HEAD -- src/frameworks/media_player/movie_player.rs src/frameworks/media_player.rs src/frameworks/core_animation/composition.rs src/frameworks/uikit.rs src/lib.rs src/frameworks/avfoundation/av_audio_player.rs src/frameworks/core_foundation/cf_bundle.rs src/frameworks/core_foundation/cf_url.rs src/frameworks/foundation/ns_file_handle.rs src/frameworks/foundation/ns_string.rs src/frameworks/openal.rs src/frameworks/uikit/ui_font.rs src/frameworks/opengles/eagl.rs
         cat > wot.patch <<'WOT_PATCH_EOF'
         diff --git a/src/frameworks/avfoundation/av_audio_player.rs b/src/frameworks/avfoundation/av_audio_player.rs
-        index 61c0da3..7213ad0 100644
+        index 61c0da3..5fcf238 100644
         --- a/src/frameworks/avfoundation/av_audio_player.rs
         +++ b/src/frameworks/avfoundation/av_audio_player.rs
         @@ -32,6 +32,35 @@ use crate::Environment;
@@ -1045,9 +1072,13 @@ jobs:
          struct AVAudioPlayerHostObject {
              audio_file_url: id,
              output_callback: AudioQueueOutputCallback,
-        @@ -246,6 +275,14 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -245,7 +274,18 @@ pub const CLASSES: ClassExports = objc_classes! {
+         }
          
          - (bool)play {
+        +    if crate::frameworks::media_player::movie_player::defer_play(env, this) {
+        +        return true;
+        +    }
              () = msg![env; this prepareToPlay];
         +    // After pause() the audio queue resumes exactly where it stopped, so the
         +    // clock must resume from the paused time, not from the packet position
@@ -1060,7 +1091,7 @@ jobs:
          
              let aq_ref = env.objc.borrow_mut::<AVAudioPlayerHostObject>(this).audio_queue.unwrap();
          
-        @@ -258,6 +295,8 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -258,6 +298,8 @@ pub const CLASSES: ClassExports = objc_classes! {
          }
          
          - (())pause {
@@ -1069,7 +1100,7 @@ jobs:
              env.objc.borrow_mut::<AVAudioPlayerHostObject>(this).is_playing = false;
              if let Some(aq_ref) = env.objc.borrow::<AVAudioPlayerHostObject>(this).audio_queue {
                  AudioQueuePause(env, aq_ref);
-        @@ -265,6 +304,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -265,6 +307,7 @@ pub const CLASSES: ClassExports = objc_classes! {
          }
          
          - (())stop {
@@ -1077,7 +1108,7 @@ jobs:
              let &mut AVAudioPlayerHostObject {
                  audio_queue,
                  audio_queue_buffers,
-        @@ -300,6 +340,7 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -300,6 +343,7 @@ pub const CLASSES: ClassExports = objc_classes! {
          }
          
          - (())dealloc {
@@ -1085,7 +1116,7 @@ jobs:
              () = msg![env; this stop];
              let &AVAudioPlayerHostObject {audio_file_url, audio_file_id, ..} = env.objc.borrow(this);
              release(env, audio_file_url);
-        @@ -311,19 +352,80 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -311,19 +355,80 @@ pub const CLASSES: ClassExports = objc_classes! {
          
          - (NSTimeInterval)currentTime {
              let host_object = env.objc.borrow::<AVAudioPlayerHostObject>(this);
@@ -1343,7 +1374,7 @@ jobs:
          
          pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         diff --git a/src/frameworks/media_player/movie_player.rs b/src/frameworks/media_player/movie_player.rs
-        index 63a782f..74bcfeb 100644
+        index 63a782f..4d2780c 100644
         --- a/src/frameworks/media_player/movie_player.rs
         +++ b/src/frameworks/media_player/movie_player.rs
         @@ -8,14 +8,101 @@
@@ -1448,7 +1479,7 @@ jobs:
          #[derive(Default)]
          pub struct State {
              active_player: Option<id>,
-        @@ -25,6 +112,10 @@ pub struct State {
+        @@ -25,6 +112,12 @@ pub struct State {
              /// delay such notifications until the app next returns to the run loop,
              /// which seems to be late enough.
              pending_notifications: VecDeque<(&'static str, id, Instant)>,
@@ -1456,10 +1487,12 @@ jobs:
         +    video_pack: Option<Option<VideoPack>>,
         +    video: Option<VideoPlayback>,
         +    intro_started: bool,
+        +    /// Game audio whose start is held back until the video has ended.
+        +    deferred_audio: Vec<id>,
          }
          impl State {
              fn get(env: &mut Environment) -> &mut Self {
-        @@ -176,6 +267,10 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -176,6 +269,10 @@ pub const CLASSES: ClassExports = objc_classes! {
              retain(env, this);
              env.framework_state.media_player.movie_player.active_player = Some(this);
          
@@ -1470,7 +1503,7 @@ jobs:
              // Act as if playback immediately completed after 1 second
              // (various apps wait for this, such as BIA and Hero of Sparta).
              let notif = (MPMoviePlayerPlaybackDidFinishNotification, this, Instant::now().checked_add(Duration::from_millis(1000)).unwrap());
-        @@ -195,6 +290,11 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -195,6 +292,11 @@ pub const CLASSES: ClassExports = objc_classes! {
          
          - (())stop {
              log!("TODO: [(MPMoviePlayerController*){:?} stop]", this);
@@ -1482,7 +1515,7 @@ jobs:
              if env.framework_state.media_player.movie_player.active_player.is_some() {
                  // Some applications (like NOVA2) may send 2 `stop` messages for each
                  // 1 `play` message for the player. In that case, we want to release
-        @@ -223,6 +323,216 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -223,6 +325,237 @@ pub const CLASSES: ClassExports = objc_classes! {
          
          };
          
@@ -1580,6 +1613,11 @@ jobs:
         +        let _: () = msg![env; audio stop];
         +        release(env, audio);
         +    }
+        +    let deferred = std::mem::take(&mut State::get(env).deferred_audio);
+        +    for player in deferred {
+        +        let _: bool = msg![env; player play];
+        +        release(env, player);
+        +    }
         +    if let Some(texture) = pb.texture {
         +        let mut gles = env.window.as_mut().unwrap().make_internal_gl_ctx_current();
         +        unsafe { gles.DeleteTextures(1, &texture) };
@@ -1593,6 +1631,22 @@ jobs:
         +        pb.player,
         +        Instant::now(),
         +    ));
+        +}
+        +
+        +/// While a video is shown, the game's own audio is held back so it doesn't
+        +/// play over the video. Returns true if this `play` call was deferred.
+        +pub fn defer_play(env: &mut Environment, player: id) -> bool {
+        +    let Some(pb) = State::get(env).video.as_ref() else {
+        +        return false;
+        +    };
+        +    if pb.audio == player {
+        +        return false;
+        +    }
+        +    if !State::get(env).deferred_audio.contains(&player) {
+        +        retain(env, player);
+        +        State::get(env).deferred_audio.push(player);
+        +    }
+        +    true
         +}
         +
         +/// Whether a video is currently being shown.
