@@ -906,6 +906,8 @@ jobs:
         CMAKE: ${{ github.workspace }}/vendor/cmake/bin/cmake
         CFLAGS: -std=gnu17
         CFLAGS_aarch64_linux_android: -std=gnu17
+        CXXFLAGS: -std=gnu++20
+        CXXFLAGS_aarch64_linux_android: -std=gnu++20
         CMAKE_C_FLAGS: -std=gnu17
     # Don't attempt to run tests (can't run on Android).
     - name: Build for Android
@@ -916,6 +918,8 @@ jobs:
         CMAKE: ${{ github.workspace }}/vendor/cmake/bin/cmake
         CFLAGS: -std=gnu17
         CFLAGS_aarch64_linux_android: -std=gnu17
+        CXXFLAGS: -std=gnu++20
+        CXXFLAGS_aarch64_linux_android: -std=gnu++20
         CMAKE_C_FLAGS: -std=gnu17
     - uses: actions/upload-artifact@v4
       with:
