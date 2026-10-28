@@ -37,7 +37,7 @@ jobs:
         git checkout FETCH_HEAD -- src/frameworks/media_player/movie_player.rs src/frameworks/media_player.rs src/frameworks/core_animation/composition.rs src/frameworks/uikit.rs src/lib.rs src/frameworks/avfoundation/av_audio_player.rs src/frameworks/core_foundation/cf_bundle.rs src/frameworks/core_foundation/cf_url.rs src/frameworks/foundation/ns_file_handle.rs src/frameworks/foundation/ns_string.rs src/frameworks/openal.rs src/frameworks/uikit/ui_font.rs
         cat > wot.patch <<'WOT_PATCH_EOF'
         diff --git a/src/frameworks/avfoundation/av_audio_player.rs b/src/frameworks/avfoundation/av_audio_player.rs
-        index 61c0da3..948006b 100644
+        index 61c0da3..7213ad0 100644
         --- a/src/frameworks/avfoundation/av_audio_player.rs
         +++ b/src/frameworks/avfoundation/av_audio_player.rs
         @@ -32,6 +32,35 @@ use crate::Environment;
@@ -116,28 +116,56 @@ jobs:
              () = msg![env; this stop];
              let &AVAudioPlayerHostObject {audio_file_url, audio_file_id, ..} = env.objc.borrow(this);
              release(env, audio_file_url);
-        @@ -311,19 +352,56 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -311,19 +352,80 @@ pub const CLASSES: ClassExports = objc_classes! {
 
          - (NSTimeInterval)currentTime {
              let host_object = env.objc.borrow::<AVAudioPlayerHostObject>(this);
         -    let current_time = if let Some(audio_desc) = host_object.audio_desc {
-        +    let wall = match play_clock_get(this.to_bits()) {
-        +        Some((Some(start), offset)) if host_object.is_playing => {
-        +            Some(offset + start.elapsed().as_secs_f64())
-        +        }
-        +        Some((None, offset)) => Some(offset),
-        +        _ => None,
-        +    };
-        +    if let Some(time) = wall {
-        +        time
-        +    } else if let Some(audio_desc) = host_object.audio_desc {
-                 let current_frame = (host_object.current_packet as f64) * (audio_desc.frames_per_packet as f64);
-                 current_frame / audio_desc.sample_rate
-             } else {
-                 0.0
+        -        let current_frame = (host_object.current_packet as f64) * (audio_desc.frames_per_packet as f64);
+        -        current_frame / audio_desc.sample_rate
+        -    } else {
+        -        0.0
         -    };
         -    log_dbg!("[(AVAudioPlayer *) {:?} currentTime] -> {:?}", this, current_time);
         -    current_time
+        +    let is_playing = host_object.is_playing;
+        +    let audio_desc = host_object.audio_desc;
+        +    let current_packet = host_object.current_packet;
+        +    let audio_file_id = host_object.audio_file_id;
+        +    match play_clock_get(this.to_bits()) {
+        +        Some((Some(start), offset)) if is_playing => {
+        +            offset + start.elapsed().as_secs_f64()
+        +        }
+        +        // The player ran to the end of the file by itself. Like on iOS, the
+        +        // time reads 0 once playback has finished (World of Tunes relies on
+        +        // this to detect the end of a level).
+        +        Some((Some(start), offset)) => {
+        +            let time = offset + start.elapsed().as_secs_f64();
+        +            let duration = match (audio_desc, audio_file_id) {
+        +                (Some(desc), Some(id)) => {
+        +                    let packets = audio_file::State::get(&mut env.framework_state)
+        +                        .audio_files
+        +                        .get(&id)
+        +                        .map_or(0, |f| f.audio_file.packet_count());
+        +                    (packets * desc.frames_per_packet as u64) as f64 / desc.sample_rate
+        +                }
+        +                _ => f64::MAX,
+        +            };
+        +            if time >= duration {
+        +                0.0
+        +            } else {
+        +                time
+        +            }
+        +        }
+        +        Some((None, offset)) => offset,
+        +        None => {
+        +            if let Some(audio_desc) = audio_desc {
+        +                let current_frame = (current_packet as f64) * (audio_desc.frames_per_packet as f64);
+        +                current_frame / audio_desc.sample_rate
+        +            } else {
+        +                0.0
+        +            }
+        +        }
         +    }
          }
          - (())setCurrentTime:(NSTimeInterval)currentTime {
@@ -910,7 +938,7 @@ jobs:
         git checkout FETCH_HEAD -- src/frameworks/media_player/movie_player.rs src/frameworks/media_player.rs src/frameworks/core_animation/composition.rs src/frameworks/uikit.rs src/lib.rs src/frameworks/avfoundation/av_audio_player.rs src/frameworks/core_foundation/cf_bundle.rs src/frameworks/core_foundation/cf_url.rs src/frameworks/foundation/ns_file_handle.rs src/frameworks/foundation/ns_string.rs src/frameworks/openal.rs src/frameworks/uikit/ui_font.rs
         cat > wot.patch <<'WOT_PATCH_EOF'
         diff --git a/src/frameworks/avfoundation/av_audio_player.rs b/src/frameworks/avfoundation/av_audio_player.rs
-        index 61c0da3..948006b 100644
+        index 61c0da3..7213ad0 100644
         --- a/src/frameworks/avfoundation/av_audio_player.rs
         +++ b/src/frameworks/avfoundation/av_audio_player.rs
         @@ -32,6 +32,35 @@ use crate::Environment;
@@ -989,28 +1017,56 @@ jobs:
              () = msg![env; this stop];
              let &AVAudioPlayerHostObject {audio_file_url, audio_file_id, ..} = env.objc.borrow(this);
              release(env, audio_file_url);
-        @@ -311,19 +352,56 @@ pub const CLASSES: ClassExports = objc_classes! {
+        @@ -311,19 +352,80 @@ pub const CLASSES: ClassExports = objc_classes! {
 
          - (NSTimeInterval)currentTime {
              let host_object = env.objc.borrow::<AVAudioPlayerHostObject>(this);
         -    let current_time = if let Some(audio_desc) = host_object.audio_desc {
-        +    let wall = match play_clock_get(this.to_bits()) {
-        +        Some((Some(start), offset)) if host_object.is_playing => {
-        +            Some(offset + start.elapsed().as_secs_f64())
-        +        }
-        +        Some((None, offset)) => Some(offset),
-        +        _ => None,
-        +    };
-        +    if let Some(time) = wall {
-        +        time
-        +    } else if let Some(audio_desc) = host_object.audio_desc {
-                 let current_frame = (host_object.current_packet as f64) * (audio_desc.frames_per_packet as f64);
-                 current_frame / audio_desc.sample_rate
-             } else {
-                 0.0
+        -        let current_frame = (host_object.current_packet as f64) * (audio_desc.frames_per_packet as f64);
+        -        current_frame / audio_desc.sample_rate
+        -    } else {
+        -        0.0
         -    };
         -    log_dbg!("[(AVAudioPlayer *) {:?} currentTime] -> {:?}", this, current_time);
         -    current_time
+        +    let is_playing = host_object.is_playing;
+        +    let audio_desc = host_object.audio_desc;
+        +    let current_packet = host_object.current_packet;
+        +    let audio_file_id = host_object.audio_file_id;
+        +    match play_clock_get(this.to_bits()) {
+        +        Some((Some(start), offset)) if is_playing => {
+        +            offset + start.elapsed().as_secs_f64()
+        +        }
+        +        // The player ran to the end of the file by itself. Like on iOS, the
+        +        // time reads 0 once playback has finished (World of Tunes relies on
+        +        // this to detect the end of a level).
+        +        Some((Some(start), offset)) => {
+        +            let time = offset + start.elapsed().as_secs_f64();
+        +            let duration = match (audio_desc, audio_file_id) {
+        +                (Some(desc), Some(id)) => {
+        +                    let packets = audio_file::State::get(&mut env.framework_state)
+        +                        .audio_files
+        +                        .get(&id)
+        +                        .map_or(0, |f| f.audio_file.packet_count());
+        +                    (packets * desc.frames_per_packet as u64) as f64 / desc.sample_rate
+        +                }
+        +                _ => f64::MAX,
+        +            };
+        +            if time >= duration {
+        +                0.0
+        +            } else {
+        +                time
+        +            }
+        +        }
+        +        Some((None, offset)) => offset,
+        +        None => {
+        +            if let Some(audio_desc) = audio_desc {
+        +                let current_frame = (current_packet as f64) * (audio_desc.frames_per_packet as f64);
+        +                current_frame / audio_desc.sample_rate
+        +            } else {
+        +                0.0
+        +            }
+        +        }
         +    }
          }
          - (())setCurrentTime:(NSTimeInterval)currentTime {
