@@ -14,7 +14,7 @@ env:
 jobs:
   build-android:
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
     - name: Disable CRLF conversion
@@ -904,11 +904,6 @@ jobs:
         ANDROID_NDK: '/usr/local/lib/android/sdk/ndk/25.2.9519653'
         ANDROID_NDK_HOME: '/usr/local/lib/android/sdk/ndk/25.2.9519653'
         CMAKE: ${{ github.workspace }}/vendor/cmake/bin/cmake
-        CFLAGS: -std=gnu17
-        CFLAGS_aarch64_linux_android: -std=gnu17
-        CXXFLAGS: -std=gnu++20
-        CXXFLAGS_aarch64_linux_android: -std=gnu++20
-        CMAKE_C_FLAGS: -std=gnu17
     # Don't attempt to run tests (can't run on Android).
     - name: Build for Android
       run: cd android && ../gradle/gradle-8.11.1/bin/gradle assembleRelease && mv app/build/outputs/apk/release/app-release.apk ../touchHLE.apk
@@ -916,11 +911,6 @@ jobs:
         # The version should match the ndkVersion defined in `android\app\build.gradle`
         ANDROID_NDK_ROOT: '/usr/local/lib/android/sdk/ndk/25.2.9519653'
         CMAKE: ${{ github.workspace }}/vendor/cmake/bin/cmake
-        CFLAGS: -std=gnu17
-        CFLAGS_aarch64_linux_android: -std=gnu17
-        CXXFLAGS: -std=gnu++20
-        CXXFLAGS_aarch64_linux_android: -std=gnu++20
-        CMAKE_C_FLAGS: -std=gnu17
     - uses: actions/upload-artifact@v4
       with:
         name: WorldOfTunes_Android_AArch64
