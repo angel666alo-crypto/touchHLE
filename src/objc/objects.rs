@@ -294,8 +294,9 @@ impl super::ObjC {
             panic!("No entry found for object {object:?}, it may have already been deallocated");
         };
         let Some(refcount) = entry.refcount.as_mut() else {
-            // Might mean a missing `retain` override.
-            panic!("Attempt to get refcount on static-lifetime object {object:?}!");
+            // Like iOS, report a static-lifetime object as having a huge
+            // retain count (UINT_MAX) instead of crashing.
+            return NonZeroU32::MAX;
         };
         *refcount
     }
@@ -308,8 +309,9 @@ impl super::ObjC {
             panic!("No entry found for object {object:?}, it may have already been deallocated");
         };
         let Some(refcount) = entry.refcount.as_mut() else {
-            // Might mean a missing `retain` override.
-            panic!("Attempt to increment refcount on static-lifetime object {object:?}!");
+            // Retaining a static-lifetime object is a harmless no-op on iOS.
+            log!("Warning: ignoring retain of static-lifetime object {object:?}");
+            return;
         };
         *refcount = refcount.checked_add(1).unwrap();
     }
@@ -326,8 +328,9 @@ impl super::ObjC {
             panic!("No entry found for object {object:?}, it may have already been deallocated");
         };
         let Some(refcount) = entry.refcount.as_mut() else {
-            // Might mean a missing `release` override.
-            panic!("Attempt to decrement refcount on static-lifetime object {object:?}!");
+            // Releasing a static-lifetime object is a harmless no-op on iOS.
+            log!("Warning: ignoring release of static-lifetime object {object:?}");
+            return false;
         };
         if refcount.get() == 1 {
             entry.refcount = None;
