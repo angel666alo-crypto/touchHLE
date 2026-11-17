@@ -582,13 +582,13 @@ jobs:
         +        .video_pack
         +        .as_ref()
         +        .and_then(|p| p.as_ref())
-        +        .and_then(|p| p.entries.iter().position(|e| e.name == "intro.mp4"))
+        +        .and_then(|p| p.entries.iter().position(|e| e.name == "intro_off.mp4"))
         +    else {
         +        return;
         +    };
         +    let bundle: id = msg_class![env; NSBundle mainBundle];
         +    let dir: id = msg![env; bundle bundlePath];
-        +    let name = ns_string::from_rust_string(env, "intro.mp4".to_string());
+        +    let name = ns_string::from_rust_string(env, "intro_off.mp4".to_string());
         +    let path: id = msg![env; dir stringByAppendingPathComponent:name];
         +    let url: id = msg_class![env; NSURL fileURLWithPath:path];
         +    let audio: id = msg_class![env; AVAudioPlayer alloc];
@@ -1578,13 +1578,13 @@ jobs:
         +        .video_pack
         +        .as_ref()
         +        .and_then(|p| p.as_ref())
-        +        .and_then(|p| p.entries.iter().position(|e| e.name == "intro.mp4"))
+        +        .and_then(|p| p.entries.iter().position(|e| e.name == "intro_off.mp4"))
         +    else {
         +        return;
         +    };
         +    let bundle: id = msg_class![env; NSBundle mainBundle];
         +    let dir: id = msg![env; bundle bundlePath];
-        +    let name = ns_string::from_rust_string(env, "intro.mp4".to_string());
+        +    let name = ns_string::from_rust_string(env, "intro_off.mp4".to_string());
         +    let path: id = msg![env; dir stringByAppendingPathComponent:name];
         +    let url: id = msg_class![env; NSURL fileURLWithPath:path];
         +    let audio: id = msg_class![env; AVAudioPlayer alloc];
